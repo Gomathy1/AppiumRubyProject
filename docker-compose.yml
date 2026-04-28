@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  tests:
+    build: .
+    volumes:
+      - .:/app
+      - bundle_cache:/usr/local/bundle
+    working_dir: /app
+    command: bash
+    stdin_open: true
+    tty: true
+
+volumes:
+  bundle_cache:
