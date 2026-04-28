@@ -4,7 +4,8 @@ class LoginPage < BasePage
   # Locators
   def username_field
     if DriverManager.android?
-      { accessibility_id: 'Username input field' }
+      # SauceLabs demo app locator
+      { accessibility_id: 'test-Username' }
     else
       { accessibility_id: 'test-Username' }
     end
@@ -12,7 +13,8 @@ class LoginPage < BasePage
 
   def password_field
     if DriverManager.android?
-      { accessibility_id: 'Password input field' }
+      # SauceLabs demo app locator
+      { accessibility_id: 'test-Password' }
     else
       { accessibility_id: 'test-Password' }
     end
@@ -20,7 +22,8 @@ class LoginPage < BasePage
 
   def login_button
     if DriverManager.android?
-      { accessibility_id: 'Login button' }
+      # SauceLabs demo app locator
+      { accessibility_id: 'test-LOGIN' }
     else
       { accessibility_id: 'test-LOGIN' }
     end
