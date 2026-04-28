@@ -1,0 +1,63 @@
+name: Stop Release Train
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Release Train Run ID to stop'
+        required: true
+        type: string
+      reason:
+        description: 'Reason for stopping'
+        required: true
+        type: string
+
+jobs:
+  stop_release:
+    name: Stop Release Train
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Cancel Release Train Workflow
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const runId = '${{ github.event.inputs.run_id }}';
+            const reason = '${{ github.event.inputs.reason }}';
+            
+            console.log(`Stopping release train run: ${runId}`);
+            console.log(`Reason: ${reason}`);
+            
+            await github.rest.actions.cancelWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: runId
+            });
+            
+            console.log('Release train stopped successfully');
+      
+      - name: Create Stop Report
+        run: |
+          cat > stop_report.md << EOF
+          # Release Train Stopped
+          
+          **Run ID:** ${{ github.event.inputs.run_id }}
+          **Stopped By:** ${{ github.actor }}
+          **Timestamp:** $(date)
+          **Reason:** ${{ github.event.inputs.reason }}
+          
+          ## Actions Taken
+          - Workflow cancelled
+          - All pending deployments halted
+          - Team notified
+          EOF
+          
+          cat stop_report.md
+      
+      - name: Notify Team
+        run: |
+          echo "🛑 Release train stopped!"
+          echo "Run ID: ${{ github.event.inputs.run_id }}"
+          echo "Reason: ${{ github.event.inputs.reason }}"
+          # Add Slack/Email notification here

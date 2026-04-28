@@ -1,0 +1,398 @@
+---
+format_version: '11'
+default_step_lib_source: https://github.com/bitrise-io/bitrise-steplib.git
+
+app:
+  envs:
+  - PLATFORM: android
+  - DEVICE_NAME: Pixel_7_API_33
+  - PLATFORM_VERSION: "13.0"
+
+trigger_map:
+- push_branch: main
+  workflow: primary
+- push_branch: develop
+  workflow: primary
+- pull_request_source_branch: "*"
+  workflow: primary
+
+workflows:
+  primary:
+    description: Primary workflow - Run 1 test per category on Android & iOS
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - cache-pull@2: {}
+    
+    - script@1:
+        title: Install Ruby dependencies
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -ex
+            bundle install
+    
+    - script@1:
+        title: Install Appium
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -ex
+            npm install -g appium
+            appium driver install uiautomator2
+            appium driver install xcuitest
+    
+    - script@1:
+        title: Start Appium Server
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -ex
+            appium &
+            sleep 5
+    
+    # ========== ANDROID TESTS ==========
+    - avd-manager@1:
+        title: Create Android Emulator
+        inputs:
+        - api_level: '33'
+        - tag: google_apis
+        - abi: x86_64
+        - emulator_id: test_emulator
+    
+    - wait-for-android-emulator@1:
+        title: Wait for Android Emulator
+        inputs:
+        - boot_timeout: '600'
+    
+    - script@1:
+        title: Run 1 Unit Test
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -ex
+            bundle exec rspec spec/unit/appium_config_spec.rb --example "returns Android capabilities"
+    
+    - script@1:
+        title: Run 1 API Test
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -ex
+            bundle exec cucumber features/api_tests.feature:7
+    
+    - script@1:
+        title: Run 1 Security Test
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -ex
+            bundle exec cucumber features/security_tests.feature:7
+    
+    - script@1:
+        title: Run 1 Android UI Test
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -ex
+            PLATFORM=android bundle exec cucumber features/ui_login.feature:11
+    
+    - script@1:
+        title: Stop Android Emulator
+        is_always_run: true
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            adb emu kill || true
+    
+    # ========== iOS TESTS ==========
+    - xcode-start-simulator@0:
+        title: Start iOS Simulator
+        inputs:
+        - destination: platform=iOS Simulator,name=iPhone 14,OS=latest
+    
+    - script@1:
+        title: Run 1 iOS UI Test
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -ex
+            PLATFORM=ios bundle exec cucumber features/ui_login.feature:11
+    
+    - script@1:
+        title: Generate Test Reports
+        is_always_run: true
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -ex
+            bundle exec report_builder -s reports/ -o reports/test_report.html -f html || true
+    
+    - deploy-to-bitrise-io@2:
+        title: Deploy Test Reports
+        is_always_run: true
+        inputs:
+        - deploy_path: reports/
+        - is_compress: 'true'
+    
+    - deploy-to-bitrise-io@2:
+        title: Deploy Screenshots
+        is_always_run: true
+        run_if: .IsBuildFailed
+        inputs:
+        - deploy_path: screenshots/
+        - is_compress: 'true'
+    
+    - cache-push@2:
+        inputs:
+        - cache_paths: |-
+            vendor/bundle
+            node_modules
+
+  smoke_tests:
+    description: Run smoke tests only
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - cache-pull@2: {}
+    - script@1:
+        title: Install dependencies
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -ex
+            bundle install
+            npm install -g appium
+            appium driver install uiautomator2
+    - script@1:
+        title: Run Smoke Tests
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -ex
+            bundle exec cucumber -p smoke
+    - deploy-to-bitrise-io@2:
+        is_always_run: true
+        inputs:
+        - deploy_path: reports/
+
+  api_tests:
+    description: Run API tests only
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - cache-pull@2: {}
+    - script@1:
+        title: Install dependencies
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -ex
+            bundle install
+    - script@1:
+        title: Run API Tests
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -ex
+            bundle exec cucumber -p api
+    - deploy-to-bitrise-io@2:
+        is_always_run: true
+        inputs:
+        - deploy_path: reports/
+
+  unit_tests:
+    description: Run unit tests only
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - cache-pull@2: {}
+    - script@1:
+        title: Install dependencies
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -ex
+            bundle install
+    - script@1:
+        title: Run Unit Tests
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -ex
+            bundle exec rspec spec/unit --format documentation --format html --out reports/rspec_report.html
+    - deploy-to-bitrise-io@2:
+        is_always_run: true
+        inputs:
+        - deploy_path: reports/
+
+  # ========== RELEASE BUILD WORKFLOWS ==========
+  build_android_release:
+    description: Build Android Release APK
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - cache-pull@2: {}
+    
+    - script@1:
+        title: Set Version
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -ex
+            echo "Building version: $VERSION"
+            envman add --key BUILD_VERSION --value "$VERSION"
+    
+    - install-missing-android-tools@3:
+        title: Install Android SDK
+        inputs:
+        - gradlew_path: $PROJECT_LOCATION/gradlew
+    
+    - android-build@1:
+        title: Build Android Release
+        inputs:
+        - project_location: $PROJECT_LOCATION
+        - module: app
+        - variant: release
+    
+    - sign-apk@1:
+        title: Sign APK
+        inputs:
+        - apk_path: $BITRISE_APK_PATH
+        - keystore_url: $BITRISEIO_ANDROID_KEYSTORE_URL
+        - keystore_password: $BITRISEIO_ANDROID_KEYSTORE_PASSWORD
+        - keystore_alias: $BITRISEIO_ANDROID_KEYSTORE_ALIAS
+        - private_key_password: $BITRISEIO_ANDROID_KEYSTORE_PRIVATE_KEY_PASSWORD
+    
+    - google-play-deploy@3:
+        title: Deploy to Google Play Internal
+        inputs:
+        - service_account_json_key_path: $BITRISEIO_SERVICE_ACCOUNT_JSON_KEY_URL
+        - package_name: $ANDROID_PACKAGE_NAME
+        - track: internal
+        - status: completed
+    
+    - deploy-to-bitrise-io@2:
+        title: Deploy APK to Bitrise
+        inputs:
+        - deploy_path: $BITRISE_SIGNED_APK_PATH
+        - notify_user_groups: none
+    
+    - cache-push@2: {}
+
+  build_ios_release:
+    description: Build iOS Release IPA
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - cache-pull@2: {}
+    
+    - script@1:
+        title: Set Version
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -ex
+            echo "Building version: $VERSION"
+            envman add --key BUILD_VERSION --value "$VERSION"
+    
+    - certificate-and-profile-installer@1:
+        title: Install Code Signing
+    
+    - cocoapods-install@2:
+        title: CocoaPods Install
+    
+    - xcode-archive@4:
+        title: Xcode Archive & Export
+        inputs:
+        - project_path: $BITRISE_PROJECT_PATH
+        - scheme: $BITRISE_SCHEME
+        - distribution_method: app-store
+        - automatic_code_signing: api-key
+    
+    - deploy-to-itunesconnect-application-loader@1:
+        title: Deploy to App Store Connect
+        inputs:
+        - api_key_path: $BITRISEIO_APP_STORE_CONNECT_API_KEY_URL
+        - api_issuer: $APP_STORE_CONNECT_API_ISSUER
+    
+    - deploy-to-bitrise-io@2:
+        title: Deploy IPA to Bitrise
+        inputs:
+        - deploy_path: $BITRISE_IPA_PATH
+        - notify_user_groups: none
+    
+    - cache-push@2: {}
+
+  # ========== DEPLOYMENT WORKFLOWS ==========
+  deploy_to_firebase:
+    description: Deploy to Firebase App Distribution
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    
+    - firebase-app-distribution@0:
+        title: Deploy Android to Firebase
+        inputs:
+        - app: $FIREBASE_ANDROID_APP_ID
+        - firebase_token: $FIREBASE_TOKEN
+        - app_path: $BITRISE_APK_PATH
+        - groups: internal-testers
+        - release_notes: "Release $VERSION - Internal Testing"
+    
+    - firebase-app-distribution@0:
+        title: Deploy iOS to Firebase
+        inputs:
+        - app: $FIREBASE_IOS_APP_ID
+        - firebase_token: $FIREBASE_TOKEN
+        - app_path: $BITRISE_IPA_PATH
+        - groups: internal-testers
+        - release_notes: "Release $VERSION - Internal Testing"
+
+  deploy_to_testflight:
+    description: Deploy to TestFlight
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    
+    - deploy-to-itunesconnect-deliver@2:
+        title: Deploy to TestFlight
+        inputs:
+        - api_key_path: $BITRISEIO_APP_STORE_CONNECT_API_KEY_URL
+        - api_issuer: $APP_STORE_CONNECT_API_ISSUER
+        - ipa_path: $BITRISE_IPA_PATH
+        - submit_for_review: 'no'
+
+  deploy_to_production:
+    description: Deploy to Production (App Store & Play Store)
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    
+    - google-play-deploy@3:
+        title: Release to Google Play Store
+        inputs:
+        - service_account_json_key_path: $BITRISEIO_SERVICE_ACCOUNT_JSON_KEY_URL
+        - package_name: $ANDROID_PACKAGE_NAME
+        - track: production
+        - status: completed
+        - user_fraction: '1.0'
+    
+    - deploy-to-itunesconnect-deliver@2:
+        title: Release to App Store
+        inputs:
+        - api_key_path: $BITRISEIO_APP_STORE_CONNECT_API_KEY_URL
+        - api_issuer: $APP_STORE_CONNECT_API_ISSUER
+        - ipa_path: $BITRISE_IPA_PATH
+        - submit_for_review: 'yes'
+        - skip_metadata: 'yes'
+        - skip_screenshots: 'yes'

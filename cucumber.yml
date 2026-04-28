@@ -1,0 +1,11 @@
+default: --publish-quiet --format pretty --format html --out reports/cucumber_report.html --format json --out reports/cucumber.json --format AllureCucumber::CucumberFormatter --out allure-results
+smoke: --tags @smoke --publish-quiet --format pretty --format html --out reports/smoke_report.html --format json --out reports/smoke.json
+ui: --tags @ui --publish-quiet --format pretty --format html --out reports/ui_report.html --format json --out reports/ui.json
+api: --tags @api --publish-quiet --format pretty --format html --out reports/api_report.html --format json --out reports/api.json
+security: --tags @security --publish-quiet --format pretty --format html --out reports/security_report.html --format json --out reports/security.json
+positive: --tags @positive --publish-quiet --format pretty --format html --out reports/positive_report.html
+negative: --tags @negative --publish-quiet --format pretty --format html --out reports/negative_report.html
+parallel: --publish-quiet features/ -n 2
+android: --tags @ui --publish-quiet --format pretty --format html --out reports/android_report.html
+ios: --tags @ui --publish-quiet --format pretty --format html --out reports/ios_report.html
+ci: --publish-quiet --format pretty --format html --out reports/ci_report.html --format json --out reports/ci.json --strict

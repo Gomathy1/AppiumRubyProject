@@ -1,0 +1,174 @@
+name: Auto Merge and Release
+
+on:
+  pull_request:
+    types: [labeled]
+  check_suite:
+    types: [completed]
+
+jobs:
+  # ========== AUTO MERGE PR WHEN ALL CHECKS PASS ==========
+  auto_merge:
+    name: Auto Merge PR
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'check_suite' &&
+      github.event.check_suite.conclusion == 'success' &&
+      github.event.check_suite.pull_requests[0] != null
+    
+    steps:
+      - name: Get PR Number
+        id: pr
+        run: |
+          PR_NUMBER=$(echo '${{ toJson(github.event.check_suite.pull_requests) }}' | jq '.[0].number')
+          echo "number=$PR_NUMBER" >> $GITHUB_OUTPUT
+      
+      - name: Check if PR has auto-merge label
+        id: check_label
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: ${{ steps.pr.outputs.number }}
+            });
+            
+            const hasAutoMerge = pr.labels.some(label => label.name === 'auto-merge');
+            return hasAutoMerge;
+      
+      - name: Auto Merge PR
+        if: steps.check_label.outputs.result == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: ${{ steps.pr.outputs.number }},
+              merge_method: 'squash',
+              commit_title: 'Auto-merge: PR #${{ steps.pr.outputs.number }}',
+              commit_message: 'All checks passed. Auto-merged by GitHub Actions.'
+            });
+            
+            console.log('✅ PR auto-merged successfully!');
+      
+      - name: Send Merge Notification
+        if: steps.check_label.outputs.result == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "✅ PR #${{ steps.pr.outputs.number }} Auto-Merged"
+          to: ${{ secrets.NOTIFICATION_EMAIL }}
+          from: GitHub Actions
+          body: |
+            PR #${{ steps.pr.outputs.number }} has been automatically merged!
+            
+            All checks passed successfully and the PR was merged to the base branch.
+            
+            Next steps:
+            - If this was merged to 'master', a release train can be triggered
+            - If this was merged to 'develop', continue development
+            
+            View merged PR: ${{ github.event.check_suite.pull_requests[0].html_url }}
+
+  # ========== TRIGGER RELEASE TRAIN ON MASTER MERGE ==========
+  trigger_release:
+    name: Trigger Release Train
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'check_suite' &&
+      github.event.check_suite.conclusion == 'success' &&
+      github.event.check_suite.head_branch == 'master'
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Get Next Version
+        id: version
+        run: |
+          # Get latest tag
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Latest tag: $LATEST_TAG"
+          
+          # Extract version numbers
+          VERSION=${LATEST_TAG#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          
+          # Increment patch version
+          PATCH=$((PATCH + 1))
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "Next version: $NEW_VERSION"
+      
+      - name: Check if should auto-release
+        id: should_release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const commits = await github.rest.repos.listCommits({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.sha,
+              per_page: 10
+            });
+            
+            // Check if any commit has [release] or [auto-release] tag
+            const shouldRelease = commits.data.some(commit => 
+              commit.commit.message.includes('[release]') || 
+              commit.commit.message.includes('[auto-release]')
+            );
+            
+            return shouldRelease;
+      
+      - name: Trigger Release Train
+        if: steps.should_release.outputs.result == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'release-train.yml',
+              ref: 'master',
+              inputs: {
+                release_type: 'release_train',
+                version: '${{ steps.version.outputs.version }}'
+              }
+            });
+            
+            console.log('✅ Release train triggered for version ${{ steps.version.outputs.version }}');
+      
+      - name: Send Release Notification
+        if: steps.should_release.outputs.result == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "🚂 Release Train Started - v${{ steps.version.outputs.version }}"
+          to: ${{ secrets.NOTIFICATION_EMAIL }}
+          from: GitHub Actions
+          body: |
+            Release Train has been automatically triggered!
+            
+            Version: ${{ steps.version.outputs.version }}
+            Branch: master
+            
+            Release Timeline:
+            - Now: Build Release
+            - +2 hrs: Internal Testers
+            - +4 hrs: Friends & Family
+            - +8 hrs: Beta Testers
+            - +10 hrs: Submit for Review
+            - +12 hrs: Production Release
+            
+            Track progress: ${{ github.server_url }}/${{ github.repository }}/actions

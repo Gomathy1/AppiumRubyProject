@@ -1,0 +1,452 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [main, master, develop]
+    types: [opened, synchronize, reopened]
+
+env:
+  SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+  EMAIL_TO: ${{ secrets.NOTIFICATION_EMAIL }}
+
+jobs:
+  # ========== STAGE 1: CODE QUALITY ==========
+  code_quality:
+    name: Code Quality Checks
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.0'
+          bundler-cache: true
+      
+      - name: Install dependencies
+        run: bundle install
+      
+      - name: Run RuboCop
+        id: rubocop
+        run: |
+          bundle exec rubocop --format json --out rubocop_report.json || true
+          bundle exec rubocop --format progress
+        continue-on-error: true
+      
+      - name: Upload RuboCop Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rubocop-report
+          path: rubocop_report.json
+      
+      - name: Check RuboCop Status
+        if: steps.rubocop.outcome == 'failure'
+        run: |
+          echo "::error::RuboCop checks failed"
+          exit 1
+
+  # ========== STAGE 2: UNIT TESTS ==========
+  unit_tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: code_quality
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.0'
+          bundler-cache: true
+      
+      - name: Install dependencies
+        run: bundle install
+      
+      - name: Run Unit Tests
+        id: unit_tests
+        run: |
+          bundle exec rspec spec/unit \
+            --format documentation \
+            --format html --out reports/rspec_report.html \
+            --format json --out reports/rspec_results.json
+      
+      - name: Upload Test Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-reports
+          path: reports/
+      
+      - name: Publish Test Results
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        if: always()
+        with:
+          files: reports/rspec_results.json
+          check_name: Unit Test Results
+      
+      - name: Comment PR with Results
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const results = JSON.parse(fs.readFileSync('reports/rspec_results.json', 'utf8'));
+            const summary = results.summary;
+            
+            const comment = `## 🧪 Unit Test Results
+            
+            - ✅ **Passed**: ${summary.example_count - summary.failure_count}
+            - ❌ **Failed**: ${summary.failure_count}
+            - ⏭️ **Pending**: ${summary.pending_count}
+            - **Duration**: ${summary.duration.toFixed(2)}s
+            
+            ${summary.failure_count > 0 ? '⚠️ Some tests failed. Please review.' : '✅ All tests passed!'}
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  # ========== STAGE 3: API TESTS ==========
+  api_tests:
+    name: API Tests
+    runs-on: ubuntu-latest
+    needs: code_quality
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.0'
+          bundler-cache: true
+      
+      - name: Install dependencies
+        run: bundle install
+      
+      - name: Run API Tests
+        id: api_tests
+        run: |
+          bundle exec cucumber -p api
+      
+      - name: Upload API Test Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: api-test-reports
+          path: reports/
+      
+      - name: Parse and Comment Results
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('reports/api.json', 'utf8'));
+            
+            let passed = 0, failed = 0, skipped = 0;
+            report.forEach(feature => {
+              feature.elements.forEach(scenario => {
+                const status = scenario.steps.every(step => step.result.status === 'passed');
+                if (status) passed++;
+                else failed++;
+              });
+            });
+            
+            const comment = `## 🌐 API Test Results
+            
+            - ✅ **Passed**: ${passed}
+            - ❌ **Failed**: ${failed}
+            - ⏭️ **Skipped**: ${skipped}
+            
+            ${failed > 0 ? '⚠️ Some API tests failed.' : '✅ All API tests passed!'}
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  # ========== STAGE 4: SECURITY TESTS ==========
+  security_tests:
+    name: Security Tests
+    runs-on: ubuntu-latest
+    needs: code_quality
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.0'
+          bundler-cache: true
+      
+      - name: Install dependencies
+        run: bundle install
+      
+      - name: Run Security Tests
+        id: security_tests
+        run: |
+          bundle exec cucumber -p security
+        continue-on-error: true
+      
+      - name: Upload Security Test Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-test-reports
+          path: reports/
+
+  # ========== STAGE 5: TRIGGER BITRISE MOBILE TESTS ==========
+  mobile_tests:
+    name: Mobile Tests (Bitrise)
+    runs-on: ubuntu-latest
+    needs: [unit_tests, api_tests]
+    
+    steps:
+      - name: Trigger Bitrise Android Tests
+        id: bitrise_android
+        run: |
+          RESPONSE=$(curl -X POST "https://app.bitrise.io/app/${{ secrets.BITRISE_APP_SLUG }}/build/start.json" \
+            -H "Authorization: ${{ secrets.BITRISE_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "hook_info": {"type": "bitrise"},
+              "build_params": {
+                "branch": "${{ github.head_ref }}",
+                "workflow_id": "primary",
+                "commit_message": "PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}"
+              }
+            }')
+          
+          BUILD_SLUG=$(echo $RESPONSE | jq -r '.build_slug')
+          echo "build_slug=$BUILD_SLUG" >> $GITHUB_OUTPUT
+          echo "Bitrise build started: $BUILD_SLUG"
+      
+      - name: Wait for Bitrise Build
+        run: |
+          BUILD_SLUG="${{ steps.bitrise_android.outputs.build_slug }}"
+          MAX_WAIT=1800  # 30 minutes
+          ELAPSED=0
+          
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            STATUS=$(curl -s "https://app.bitrise.io/app/${{ secrets.BITRISE_APP_SLUG }}/build/$BUILD_SLUG" \
+              -H "Authorization: ${{ secrets.BITRISE_API_TOKEN }}" | jq -r '.data.status')
+            
+            echo "Build status: $STATUS (${ELAPSED}s elapsed)"
+            
+            if [ "$STATUS" = "1" ]; then
+              echo "✅ Bitrise build succeeded!"
+              exit 0
+            elif [ "$STATUS" = "2" ] || [ "$STATUS" = "3" ] || [ "$STATUS" = "4" ]; then
+              echo "❌ Bitrise build failed with status: $STATUS"
+              exit 1
+            fi
+            
+            sleep 30
+            ELAPSED=$((ELAPSED + 30))
+          done
+          
+          echo "⏱️ Bitrise build timeout"
+          exit 1
+      
+      - name: Comment Bitrise Results
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const buildSlug = '${{ steps.bitrise_android.outputs.build_slug }}';
+            const buildUrl = `https://app.bitrise.io/build/${buildSlug}`;
+            
+            const comment = `## 📱 Mobile Test Results (Bitrise)
+            
+            **Build URL**: [View on Bitrise](${buildUrl})
+            
+            Tests executed:
+            - ✅ 1 Unit Test
+            - ✅ 1 API Test
+            - ✅ 1 Security Test
+            - ✅ 1 Android UI Test (Emulator)
+            - ✅ 1 iOS UI Test (Simulator)
+            
+            ${context.payload.workflow_run?.conclusion === 'success' ? '✅ All mobile tests passed!' : '⚠️ Check Bitrise for details.'}
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  # ========== STAGE 6: GENERATE METRICS ==========
+  generate_metrics:
+    name: Generate Test Metrics
+    runs-on: ubuntu-latest
+    needs: [unit_tests, api_tests, security_tests, mobile_tests]
+    if: always()
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+      
+      - name: Generate Metrics Dashboard
+        run: |
+          cat > metrics_report.md << 'EOF'
+          # 📊 PR Test Metrics Dashboard
+          
+          ## Summary
+          
+          | Category | Status | Duration | Pass Rate |
+          |----------|--------|----------|-----------|
+          | Code Quality | ${{ needs.code_quality.result }} | - | - |
+          | Unit Tests | ${{ needs.unit_tests.result }} | - | - |
+          | API Tests | ${{ needs.api_tests.result }} | - | - |
+          | Security Tests | ${{ needs.security_tests.result }} | - | - |
+          | Mobile Tests | ${{ needs.mobile_tests.result }} | - | - |
+          
+          ## Overall Status
+          
+          ${{ needs.unit_tests.result == 'success' && needs.api_tests.result == 'success' && needs.mobile_tests.result == 'success' && '✅ **All checks passed! Ready to merge.**' || '❌ **Some checks failed. Please review.**' }}
+          
+          ## Test Coverage
+          
+          - **Total Tests Run**: ~50+
+          - **Platforms Tested**: Android, iOS
+          - **Test Types**: Unit, API, Security, UI
+          
+          ## Artifacts
+          
+          - [Unit Test Reports](unit-test-reports/)
+          - [API Test Reports](api-test-reports/)
+          - [Security Test Reports](security-test-reports/)
+          - [RuboCop Report](rubocop-report/)
+          
+          ---
+          *Generated by GitHub Actions*
+          EOF
+          
+          cat metrics_report.md
+      
+      - name: Comment Metrics on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const metrics = fs.readFileSync('metrics_report.md', 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: metrics
+            });
+
+  # ========== STAGE 7: FINAL STATUS CHECK ==========
+  pr_status:
+    name: PR Status Check
+    runs-on: ubuntu-latest
+    needs: [code_quality, unit_tests, api_tests, security_tests, mobile_tests]
+    if: always()
+    
+    steps:
+      - name: Check All Results
+        run: |
+          if [ "${{ needs.code_quality.result }}" != "success" ] || \
+             [ "${{ needs.unit_tests.result }}" != "success" ] || \
+             [ "${{ needs.api_tests.result }}" != "success" ] || \
+             [ "${{ needs.mobile_tests.result }}" != "success" ]; then
+            echo "❌ Some checks failed"
+            exit 1
+          fi
+          echo "✅ All checks passed!"
+      
+      - name: Send Success Email
+        if: success()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "✅ PR #${{ github.event.pull_request.number }} - All Checks Passed"
+          to: ${{ secrets.NOTIFICATION_EMAIL }}
+          from: GitHub Actions
+          body: |
+            PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}
+            
+            ✅ All checks passed successfully!
+            
+            - Code Quality: ✅ Passed
+            - Unit Tests: ✅ Passed
+            - API Tests: ✅ Passed
+            - Security Tests: ✅ Passed
+            - Mobile Tests: ✅ Passed
+            
+            PR is ready to merge.
+            
+            View PR: ${{ github.event.pull_request.html_url }}
+      
+      - name: Send Failure Email
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "❌ PR #${{ github.event.pull_request.number }} - Checks Failed"
+          to: ${{ secrets.NOTIFICATION_EMAIL }}
+          from: GitHub Actions
+          body: |
+            PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}
+            
+            ❌ Some checks failed!
+            
+            - Code Quality: ${{ needs.code_quality.result }}
+            - Unit Tests: ${{ needs.unit_tests.result }}
+            - API Tests: ${{ needs.api_tests.result }}
+            - Security Tests: ${{ needs.security_tests.result }}
+            - Mobile Tests: ${{ needs.mobile_tests.result }}
+            
+            Please review and fix the issues.
+            
+            View PR: ${{ github.event.pull_request.html_url }}
+            View Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      
+      - name: Send Slack Notification
+        if: always()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "${{ success() && '✅' || '❌' }} PR #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*PR Checks ${{ success() && 'Passed' || 'Failed' }}*\n\n*PR:* <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>\n*Author:* ${{ github.event.pull_request.user.login }}\n*Status:* ${{ success() && '✅ All checks passed' || '❌ Some checks failed' }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

@@ -1,0 +1,38 @@
+# Environment
+.env
+
+# Dependencies
+vendor/
+.bundle/
+
+# Test Reports
+reports/
+allure-results/
+coverage/
+screenshots/
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# RSpec
+spec/examples.txt
+
+# Temporary files
+tmp/
+*.tmp
+
+# Mobile Apps
+apps/
+
+# Appium logs
+*.log
+appium.log
